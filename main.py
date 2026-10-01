@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from sentence_transformers import SentenceTransformer
@@ -8,7 +9,15 @@ import torch
 
 app = FastAPI(title="Novel Recommendation API")
 
-# จำกัดให้ใช้ 1 Thread เพื่อป้องกัน CPU และ RAM เกินโควตา
+# อนุญาตให้เว็บจากทุกโดเมน (โดยเฉพาะเว็บมหาวิทยาลัย) เรียกใช้งานได้
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 torch.set_num_threads(1)
 
 class BookItem(BaseModel):
@@ -31,7 +40,6 @@ def calculate_similarity(payload: CalculationPayload):
     book_ids = [b.book_id for b in books]
     texts = [b.text for b in books]
 
-    # โหลดโมเดลเฉพาะตอนที่มีการเรียกคำนวณ
     model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     vectors = model.encode(texts, batch_size=8, show_progress_bar=False)
     
@@ -53,7 +61,6 @@ def calculate_similarity(payload: CalculationPayload):
                 "similarity": item["similarity"]
             })
 
-    # คืนหน่วยความจำ RAM ทันทีหลังประมวลผลเสร็จ
     del model
     del vectors
     del similarity_matrix
