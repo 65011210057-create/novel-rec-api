@@ -9,13 +9,14 @@ import torch
 
 app = FastAPI(title="Novel Recommendation API")
 
-# อนุญาตให้ทุกโดเมน (รวมทั้ง http ของมหาวิทยาลัย) ยิงเข้ามาได้
+# เปิดรับคำขอจากทุกโดเมนและทุกโพรโทคอล
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 torch.set_num_threads(1)
