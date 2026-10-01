@@ -9,11 +9,11 @@ import torch
 
 app = FastAPI(title="Novel Recommendation API")
 
-# อนุญาตให้เว็บจากทุกโดเมน (โดยเฉพาะเว็บมหาวิทยาลัย) เรียกใช้งานได้
+# อนุญาตให้ทุกโดเมน (รวมทั้ง http ของมหาวิทยาลัย) ยิงเข้ามาได้
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
