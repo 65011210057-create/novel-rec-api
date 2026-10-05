@@ -1,6 +1,6 @@
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.14.0+cpu
 fastapi
 uvicorn
-sentence-transformers
+pymysql
+pandas
 scikit-learn
+cryptography
