@@ -1,70 +1,87 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
-from sentence_transformers import SentenceTransformer
+import pymysql
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import gc
-import torch
+import os
 
-app = FastAPI(title="Novel Recommendation API")
+app = FastAPI(title="Novel Recommendation TF-IDF API")
 
-# เปิดรับคำขอจากทุกโดเมนและทุกโพรโทคอล
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
-torch.set_num_threads(1)
+# ข้อมูลเชื่อมต่อ TiDB Cloud
+DB_HOST = os.getenv("DB_HOST", "gateway01.ap-southeast-1.prod.aws.tidbcloud.com")
+DB_USER = os.getenv("DB_USER", "4JodNqEkbc1nEbH.root")
+DB_PASS = os.getenv("DB_PASS", "zF4DHIXiUrHylslj")
+DB_NAME = os.getenv("DB_NAME", "thai_novel")
+DB_PORT = int(os.getenv("DB_PORT", 4000))
 
-class BookItem(BaseModel):
-    book_id: int
-    text: str
+def get_db_connection():
+    return pymysql.connect(
+        host=DB_HOST,
+        user=DB_USER,
+        password=DB_PASS,
+        database=DB_NAME,
+        port=DB_PORT,
+        charset="utf8mb4",
+        ssl={"ssl": True}
+    )
 
-class CalculationPayload(BaseModel):
-    books: List[BookItem]
+def run_tfidf_calculation(category_id: int):
+    try:
+        conn = get_db_connection()
+        sql = "SELECT Book_id, Title, Blurb FROM book WHERE Category_id = %s ORDER BY Book_id"
+        df = pd.read_sql(sql, conn, params=(category_id,))
+        
+        if len(df) <= 1:
+            conn.close()
+            return
+
+        # รวมข้อความสำหรับทำ TF-IDF
+        df["content"] = df["Title"].fillna("") + " " + df["Blurb"].fillna("")
+
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform(df["content"])
+        sim_matrix = cosine_similarity(tfidf_matrix)
+        book_ids = df["Book_id"].tolist()
+
+        cursor = conn.cursor()
+        # ล้างผลลัพธ์เดิมเฉพาะหมวดนี้
+        cursor.execute("DELETE FROM recommendation_sentence_same_category WHERE book_id IN (SELECT Book_id FROM book WHERE Category_id = %s)", (category_id,))
+
+        for i, b_id in enumerate(book_ids):
+            scores = sim_matrix[i]
+            ranked = []
+            for j, score in enumerate(scores):
+                if book_ids[j] != b_id:
+                    ranked.append((int(book_ids[j]), float(score)))
+            
+            ranked.sort(key=lambda x: x[1], reverse=True)
+            for rec_id, score in ranked[:5]:
+                cursor.execute("""
+                    INSERT INTO recommendation_sentence_same_category (book_id, recommend_book_id, similarity)
+                    VALUES (%s, %s, %s)
+                """, (int(b_id), int(rec_id), round(score, 4)))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"คำนวณและบันทึกหมวด {category_id} สำเร็จ")
+    except Exception as e:
+        print(f"Error calculating TF-IDF: {e}")
 
 @app.get("/")
 def root():
     return {"status": "online"}
 
-@app.post("/calculate-similarity")
-def calculate_similarity(payload: CalculationPayload):
-    books = payload.books
-    if len(books) <= 1:
-        return {"recommendations": []}
-
-    book_ids = [b.book_id for b in books]
-    texts = [b.text for b in books]
-
-    model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-    vectors = model.encode(texts, batch_size=8, show_progress_bar=False)
-    
-    similarity_matrix = cosine_similarity(vectors)
-
-    results = []
-    for i, book_id in enumerate(book_ids):
-        scores = similarity_matrix[i]
-        ranked = []
-        for j, score in enumerate(scores):
-            if book_ids[j] != book_id:
-                ranked.append({"recommend_book_id": int(book_ids[j]), "similarity": round(float(score), 4)})
-        
-        ranked.sort(key=lambda x: x["similarity"], reverse=True)
-        for item in ranked[:5]:
-            results.append({
-                "book_id": int(book_id),
-                "recommend_book_id": item["recommend_book_id"],
-                "similarity": item["similarity"]
-            })
-
-    del model
-    del vectors
-    del similarity_matrix
-    gc.collect()
-
-    return {"recommendations": results}
+@app.get("/calculate")
+def trigger_calculate(category_id: int, background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_tfidf_calculation, category_id)
+    return {"status": "processing", "category_id": category_id}
